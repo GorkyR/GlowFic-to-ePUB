@@ -62,17 +62,23 @@ var icons = posts.Where(p => p.Icon is not null).Select(post => post.Icon!.Id).D
 
 var images = icons
 	.Select(async icon => {
-		var image_data = await (await client.GetAsync(icon)).Content.ReadAsByteArrayAsync();
-		return new {
-			Source = icon,
-			Filename = $"{Guid.NewGuid()}{Path.GetExtension(icon)}",
-			Data = image_data
-		};
+		try {
+			var image_data = await (await client.GetAsync(icon)).Content.ReadAsByteArrayAsync();
+			return new {
+				Source = icon,
+				Filename = $"{Guid.NewGuid()}{Path.GetExtension(icon)}",
+				Data = image_data
+			};
+		} catch (Exception ex) {
+			Console.Error.WriteLine($"\r[!] Error downloading image from \"{icon}\":\n\t[ex.GetType().Name]: {ex.Message}");
+			return null;
+		}
 	})
 	.Select((task, index) => {
 		Console.Write($"\rDownloading icon {index + 1:D3}/{icons.Length:D3}...");
 		return task.Result;
 	})
+	.Where(_ => _ is not null)
 	.ToDictionary(o => o.Source, o => new { o.Filename, o.Data });
 
 Erase(30);
@@ -80,13 +86,13 @@ Console.WriteLine($"Images: {icons.Length}\n");
 
 Console.Write("Converting to markdown...");
 var markdown = posts.Select(post => 
-	(post.Icon is not null? $"<img title=\"{post.Icon.Title}\" src=\"assets/{images[post.Icon.Id].Filename}\" width=\"50\"/> ": null) + 
+	(post.Icon is not null? $"<img title=\"{post.Icon.Title}\" src=\"assets/{(images.ContainsKey(post.Icon.Id)? images[post.Icon.Id].Filename : "not_found.png")}\" width=\"50\"/> ": null) + 
 	(post.Character is not null? $"__[{post.Character}]__" : null) + 
 	"\n\n" + post.Text).Join("\n\n-----\n\n");
 
 Erase(25);
 Console.Write("Converting to html...");
-var html = Markdown.ToHtml("<style>body { font-size: .75rem; }</style>\n" + markdown);
+var html = Markdown.ToHtml("<style>body { font-size: .8rem; }</style>\n" + markdown);
 
 Erase(25);
 
