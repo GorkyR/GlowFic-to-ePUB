@@ -9,11 +9,13 @@ if (!args.Any()) {
 	return;
 }
 
-Regex glowfic_regex = new Regex(@"glowfic.com/posts/(\d+)");
-Regex paragraph_regex = new Regex(@"<p>(.+?)</p>");
-Regex underline_regex = new Regex(@"<span style=""text-decoration: underline;"">(.+?)</span>");
-Regex non_bullet_regex_1 = new Regex(@"^(\s*)- ");
-Regex non_bullet_regex_2 = new Regex(@"(\n\s*)- ");
+Regex glowfic_regex = new(@"glowfic.com/posts/(\d+)");
+Regex paragraph_regex = new(@"<p>(.+?)</p>");
+Regex underline_regex = new(@"<span style=""text-decoration: underline;"">(.+?)</span>");
+Regex non_bullet_regex_1 = new(@"^(\s*)- ");
+Regex non_bullet_regex_2 = new(@"(\n\s*)- ");
+Regex query_string_regex = new(@"\?.+$");
+Regex tag_regex = new(@"<(\/?)(([-a-z]+).*?)>");
 
 var match = glowfic_regex.Match(args[0]);
 if (!match.Success) {
@@ -66,7 +68,7 @@ var images = icons
 			var image_data = await (await client.GetAsync(icon)).Content.ReadAsByteArrayAsync();
 			return new {
 				Source = icon,
-				Filename = $"{Guid.NewGuid()}{Path.GetExtension(icon)}",
+				Filename = $"{Guid.NewGuid()}{query_string_regex.Replace(Path.GetExtension(icon), "")}",
 				Data = image_data
 			};
 		} catch (Exception ex) {
@@ -74,14 +76,16 @@ var images = icons
 			return null;
 		}
 	})
-	.Select((task, index) => {
-		Console.Write($"\rDownloading icon {index + 1:D3}/{icons.Length:D3}...");
-		return task.Result;
+	.Chunk(10)
+	.SelectMany((tasks, index) => {
+		Console.Write($"\rDownloading icons {(index * 10) + 1:D3}–{Math.Min((index + 1) * 10 + 1, icons.Length):D3} / {icons.Length:D3}...");
+		Task.WaitAll(tasks);
+		return tasks.Select(t => t.Result);
 	})
 	.Where(_ => _ is not null)
 	.ToDictionary(o => o.Source, o => new { o.Filename, o.Data });
 
-Erase(30);
+Erase(34);
 Console.WriteLine($"Images: {icons.Length}\n");
 
 Console.Write("Converting to markdown...");
@@ -92,7 +96,57 @@ var markdown = posts.Select(post =>
 
 Erase(25);
 Console.Write("Converting to html...");
-var html = Markdown.ToHtml("<style>body { font-size: .8rem; }</style>\n" + markdown);
+var html = Markdown.ToHtml(markdown).Replace("<br>", "<br/>");
+
+string FixInterleavedHtmlTags(string html) { // @NOTE: THIS IS A HACK!
+	var tags = tag_regex.Matches(html);
+	var tag_stack = new Stack<Match>();
+	var fixes = new Stack<(int index, int count, string replacement)>();
+	foreach (Match tag in tags) {
+		if (tag.Groups[2].Value.EndsWith("/")) continue;
+		var closing = !string.IsNullOrEmpty(tag.Groups[1].Value);
+		var name = tag.Groups[3].Value;
+
+		if (closing) {
+			if (!tag_stack.Any(t => t.Groups[3].Value == name))
+				fixes.Push((tag.Index, tag.Length, ""));
+			else {
+				var between = tag_stack.TakeWhile(m => m.Groups[3].Value != name).Count();
+				if (between > 0) {
+					var replacement = tag.Value;
+					var temp = new Stack<Match>();
+					for (int i = 0; i < between; i++) {
+						var prev = tag_stack.Pop();
+						temp.Push(prev);
+						var prev_name = prev.Groups[3].Value;
+						var prev_full = prev.Groups[2].Value;
+						replacement = $"</{prev_full}>{replacement}<{prev_name}>";
+					}
+					fixes.Push((tag.Index, tag.Length, replacement));
+					tag_stack.Pop();
+					while (temp.TryPop(out var temp_tag))
+						tag_stack.Push(temp_tag);
+				} else tag_stack.Pop();
+			}
+		} else
+			tag_stack.Push(tag);
+	}
+	while (tag_stack.TryPop(out var tag))
+		fixes.Push((html.Length, 0, $"</{tag.Groups[2].Value}>"));
+	while (fixes.TryPop(out var fix)) {
+		var (index, count, replacement) = fix;
+		html = html.Substring(0, index) + replacement + html.Substring(index + count);
+	}
+	return html;
+}
+
+html = 
+"<?xml version='1.0' encoding='utf-8'?>\n" + 
+"<!DOCTYPE html>\n" + 
+"<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" epub:prefix=\"z3998: http://www.daisy.org/z3998/2012/vocab/structure/#\" lang=\"en\" xml:lang=\"en\">\n" + 
+"<head><style>body { font-size: .8rem; }</style></head>\n" + 
+"<body>\n"+ FixInterleavedHtmlTags(html) + "\n</body>\n" + 
+"</html>";
 
 Erase(25);
 
